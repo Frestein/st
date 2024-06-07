@@ -2,5 +2,6 @@
 config.h
 patches.h
 *.orig
+*.rej
 st
 stest

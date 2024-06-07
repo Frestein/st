@@ -112,7 +112,6 @@ typedef struct {
 	XSetWindowAttributes attrs;
 	int scr;
 	int isfixed; /* is fixed geometry? */
-	int depth; /* bit depth */
 	int l, t; /* left and top offset */
 	int gm; /* geometry mask */
 } XWindow;
@@ -251,7 +250,6 @@ static char *usedfont = NULL;
 static double usedfontsize = 0;
 static double defaultfontsize = 0;
 
-static char *opt_alpha = NULL;
 static char *opt_class = NULL;
 static char **opt_cmd  = NULL;
 static char *opt_embed = NULL;
@@ -763,7 +761,7 @@ xresize(int col, int row)
 
 	XFreePixmap(xw.dpy, xw.buf);
 	xw.buf = XCreatePixmap(xw.dpy, xw.win, win.w, win.h,
-			xw.depth);
+			DefaultDepth(xw.dpy, xw.scr));
 	XftDrawChange(xw.draw, xw.buf);
 	xclear(0, 0, win.w, win.h);
 
@@ -823,13 +821,6 @@ xloadcols(void)
 			else
 				die("could not allocate color %d\n", i);
 		}
-
-	/* set alpha value of bg color */
-	if (opt_alpha)
-		alpha = strtof(opt_alpha, NULL);
-	dc.col[defaultbg].color.alpha = (unsigned short)(0xffff * alpha);
-	dc.col[defaultbg].pixel &= 0x00FFFFFF;
-	dc.col[defaultbg].pixel |= (unsigned char)(0xff * alpha) << 24;
 	loaded = 1;
 }
 
@@ -1152,23 +1143,11 @@ xinit(int w, int h)
 	Window parent;
 	pid_t thispid = getpid();
 	XColor xmousefg, xmousebg;
-	XWindowAttributes attr;
-	XVisualInfo vis;
 
 	if (!(xw.dpy = XOpenDisplay(NULL)))
 		die("can't open display\n");
 	xw.scr = XDefaultScreen(xw.dpy);
-
-	if (!(opt_embed && (parent = strtol(opt_embed, NULL, 0)))) {
-		parent = XRootWindow(xw.dpy, xw.scr);
-		xw.depth = 32;
-	} else {
-		XGetWindowAttributes(xw.dpy, parent, &attr);
-		xw.depth = attr.depth;
-	}
-
-	XMatchVisualInfo(xw.dpy, xw.scr, xw.depth, TrueColor, &vis);
-	xw.vis = vis.visual;
+	xw.vis = XDefaultVisual(xw.dpy, xw.scr);
 
 	/* font */
 	if (!FcInit())
@@ -1178,7 +1157,7 @@ xinit(int w, int h)
 	xloadfonts(usedfont, 0);
 
 	/* colors */
-	xw.cmap = XCreateColormap(xw.dpy, parent, xw.vis, None);
+	xw.cmap = XDefaultColormap(xw.dpy, xw.scr);
 	xloadcols();
 
 	/* adjust fixed window geometry */
@@ -1206,15 +1185,19 @@ xinit(int w, int h)
 		| ButtonMotionMask | ButtonPressMask | ButtonReleaseMask;
 	xw.attrs.colormap = xw.cmap;
 
+	if (!(opt_embed && (parent = strtol(opt_embed, NULL, 0))))
+		parent = XRootWindow(xw.dpy, xw.scr);
 	xw.win = XCreateWindow(xw.dpy, parent, xw.l, xw.t,
-			win.w, win.h, 0, xw.depth, InputOutput,
+			win.w, win.h, 0, XDefaultDepth(xw.dpy, xw.scr), InputOutput,
 			xw.vis, CWBackPixel | CWBorderPixel | CWBitGravity
 			| CWEventMask | CWColormap, &xw.attrs);
 
 	memset(&gcvalues, 0, sizeof(gcvalues));
 	gcvalues.graphics_exposures = False;
-	xw.buf = XCreatePixmap(xw.dpy, xw.win, win.w, win.h, xw.depth);
-	dc.gc = XCreateGC(xw.dpy, xw.buf, GCGraphicsExposures, &gcvalues);
+	dc.gc = XCreateGC(xw.dpy, parent, GCGraphicsExposures,
+			&gcvalues);
+	xw.buf = XCreatePixmap(xw.dpy, xw.win, win.w, win.h,
+			DefaultDepth(xw.dpy, xw.scr));
 	XSetForeground(xw.dpy, dc.gc, dc.col[defaultbg].pixel);
 	XFillRectangle(xw.dpy, xw.buf, dc.gc, 0, 0, win.w, win.h);
 
@@ -1981,113 +1964,6 @@ resize(XEvent *e)
 	cresize(e->xconfigure.width, e->xconfigure.height);
 }
 
-void
-run(void)
-{
-	XEvent ev;
-	int w = win.w, h = win.h;
-	fd_set rfd;
-	int xfd = XConnectionNumber(xw.dpy), ttyfd, xev, drawing;
-	struct timespec seltv, *tv, now, lastblink, trigger;
-	double timeout;
-
-	/* Waiting for window mapping */
-	do {
-		XNextEvent(xw.dpy, &ev);
-		/*
-		 * This XFilterEvent call is required because of XOpenIM. It
-		 * does filter out the key event and some client message for
-		 * the input method too.
-		 */
-		if (XFilterEvent(&ev, None))
-			continue;
-		if (ev.type == ConfigureNotify) {
-			w = ev.xconfigure.width;
-			h = ev.xconfigure.height;
-		}
-	} while (ev.type != MapNotify);
-
-	ttyfd = ttynew(opt_line, shell, opt_io, opt_cmd);
-	cresize(w, h);
-
-	for (timeout = -1, drawing = 0, lastblink = (struct timespec){0};;) {
-		FD_ZERO(&rfd);
-		FD_SET(ttyfd, &rfd);
-		FD_SET(xfd, &rfd);
-
-		if (XPending(xw.dpy))
-			timeout = 0;  /* existing events might not set xfd */
-
-		seltv.tv_sec = timeout / 1E3;
-		seltv.tv_nsec = 1E6 * (timeout - 1E3 * seltv.tv_sec);
-		tv = timeout >= 0 ? &seltv : NULL;
-
-		if (pselect(MAX(xfd, ttyfd)+1, &rfd, NULL, NULL, tv, NULL) < 0) {
-			if (errno == EINTR)
-				continue;
-			die("select failed: %s\n", strerror(errno));
-		}
-		clock_gettime(CLOCK_MONOTONIC, &now);
-
-		if (FD_ISSET(ttyfd, &rfd))
-			ttyread();
-
-		xev = 0;
-		while (XPending(xw.dpy)) {
-			xev = 1;
-			XNextEvent(xw.dpy, &ev);
-			if (XFilterEvent(&ev, None))
-				continue;
-			if (handler[ev.type])
-				(handler[ev.type])(&ev);
-		}
-
-		/*
-		 * To reduce flicker and tearing, when new content or event
-		 * triggers drawing, we first wait a bit to ensure we got
-		 * everything, and if nothing new arrives - we draw.
-		 * We start with trying to wait minlatency ms. If more content
-		 * arrives sooner, we retry with shorter and shorter periods,
-		 * and eventually draw even without idle after maxlatency ms.
-		 * Typically this results in low latency while interacting,
-		 * maximum latency intervals during `cat huge.txt`, and perfect
-		 * sync with periodic updates from animations/key-repeats/etc.
-		 */
-		if (FD_ISSET(ttyfd, &rfd) || xev) {
-			if (!drawing) {
-				trigger = now;
-				if (IS_SET(MODE_BLINK)) {
-					win.mode ^= MODE_BLINK;
-				}
-				lastblink = now;
-				drawing = 1;
-			}
-			timeout = (maxlatency - TIMEDIFF(now, trigger)) \
-			          / maxlatency * minlatency;
-			if (timeout > 0)
-				continue;  /* we have time, try to find idle */
-		}
-
-		/* idle detected or maxlatency exhausted -> draw */
-		timeout = -1;
-		if (blinktimeout && (cursorblinks || tattrset(ATTR_BLINK))) {
-			timeout = blinktimeout - TIMEDIFF(now, lastblink);
-			if (timeout <= 0) {
-				if (-timeout > blinktimeout) /* start visible */
-					win.mode |= MODE_BLINK;
-				win.mode ^= MODE_BLINK;
-				tsetdirtattr(ATTR_BLINK);
-				lastblink = now;
-				timeout = blinktimeout;
-			}
-		}
-
-		draw();
-		XFlush(xw.dpy);
-		drawing = 0;
-	}
-}
-
 
 #define XRESOURCE_LOAD_META(NAME)					\
 	if(!XrmGetResource(xrdb, "st." NAME, "st." NAME, &type, &ret))	\
@@ -2201,6 +2077,114 @@ reload(int sig)
 
 
 void
+run(void)
+{
+	XEvent ev;
+	int w = win.w, h = win.h;
+	fd_set rfd;
+	int xfd = XConnectionNumber(xw.dpy), ttyfd, xev, drawing;
+	struct timespec seltv, *tv, now, lastblink, trigger;
+	double timeout;
+
+	/* Waiting for window mapping */
+	do {
+		XNextEvent(xw.dpy, &ev);
+		/*
+		 * This XFilterEvent call is required because of XOpenIM. It
+		 * does filter out the key event and some client message for
+		 * the input method too.
+		 */
+		if (XFilterEvent(&ev, None))
+			continue;
+		if (ev.type == ConfigureNotify) {
+			w = ev.xconfigure.width;
+			h = ev.xconfigure.height;
+		}
+	} while (ev.type != MapNotify);
+
+	ttyfd = ttynew(opt_line, shell, opt_io, opt_cmd);
+	cresize(w, h);
+
+	for (timeout = -1, drawing = 0, lastblink = (struct timespec){0};;) {
+		FD_ZERO(&rfd);
+		FD_SET(ttyfd, &rfd);
+		FD_SET(xfd, &rfd);
+
+		if (XPending(xw.dpy))
+			timeout = 0;  /* existing events might not set xfd */
+
+		seltv.tv_sec = timeout / 1E3;
+		seltv.tv_nsec = 1E6 * (timeout - 1E3 * seltv.tv_sec);
+		tv = timeout >= 0 ? &seltv : NULL;
+
+		if (pselect(MAX(xfd, ttyfd)+1, &rfd, NULL, NULL, tv, NULL) < 0) {
+			if (errno == EINTR)
+				continue;
+			die("select failed: %s\n", strerror(errno));
+		}
+		clock_gettime(CLOCK_MONOTONIC, &now);
+
+		if (FD_ISSET(ttyfd, &rfd))
+			ttyread();
+
+		xev = 0;
+		while (XPending(xw.dpy)) {
+			xev = 1;
+			XNextEvent(xw.dpy, &ev);
+			if (XFilterEvent(&ev, None))
+				continue;
+			if (handler[ev.type])
+				(handler[ev.type])(&ev);
+		}
+
+		/*
+		 * To reduce flicker and tearing, when new content or event
+		 * triggers drawing, we first wait a bit to ensure we got
+		 * everything, and if nothing new arrives - we draw.
+		 * We start with trying to wait minlatency ms. If more content
+		 * arrives sooner, we retry with shorter and shorter periods,
+		 * and eventually draw even without idle after maxlatency ms.
+		 * Typically this results in low latency while interacting,
+		 * maximum latency intervals during `cat huge.txt`, and perfect
+		 * sync with periodic updates from animations/key-repeats/etc.
+		 */
+		if (FD_ISSET(ttyfd, &rfd) || xev) {
+			if (!drawing) {
+				trigger = now;
+				if (IS_SET(MODE_BLINK)) {
+					win.mode ^= MODE_BLINK;
+				}
+				lastblink = now;
+				drawing = 1;
+			}
+			timeout = (maxlatency - TIMEDIFF(now, trigger)) \
+			          / maxlatency * minlatency;
+			if (timeout > 0)
+				continue;  /* we have time, try to find idle */
+		}
+
+		/* idle detected or maxlatency exhausted -> draw */
+		timeout = -1;
+		if (blinktimeout && (cursorblinks || tattrset(ATTR_BLINK))) {
+			timeout = blinktimeout - TIMEDIFF(now, lastblink);
+			if (timeout <= 0) {
+				if (-timeout > blinktimeout) /* start visible */
+					win.mode |= MODE_BLINK;
+				win.mode ^= MODE_BLINK;
+				tsetdirtattr(ATTR_BLINK);
+				lastblink = now;
+				timeout = blinktimeout;
+			}
+		}
+
+		draw();
+		XFlush(xw.dpy);
+		drawing = 0;
+	}
+}
+
+
+void
 usage(void)
 {
 	die("usage: %s [-aiv] [-c class] [-f font] [-g geometry]"
@@ -2223,9 +2207,6 @@ main(int argc, char *argv[])
 	ARGBEGIN {
 	case 'a':
 		allowaltscreen = 0;
-		break;
-	case 'A':
-		opt_alpha = EARGF(usage());
 		break;
 	case 'c':
 		opt_class = EARGF(usage());
@@ -2282,6 +2263,8 @@ run:
 
 	setlocale(LC_CTYPE, "");
 	XSetLocaleModifiers("");
+	xrdb_load();
+	signal(SIGUSR1, reload);
 	switch (geometry) {
 	case CellGeometry:
 		xinit(cols, rows);
@@ -2292,8 +2275,6 @@ run:
 		rows = (win.h - 2 * borderpx) / win.ch;
 		break;
 	}
-	xrdb_load();
-	signal(SIGUSR1, reload);
 	cols = MAX(cols, 1);
 	rows = MAX(rows, 1);
 	tnew(cols, rows);
