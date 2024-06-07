@@ -141,6 +141,12 @@ static const char *colorname[] = {
 
 
 /*
+ * Whether to use pixel geometry or cell geometry
+ */
+
+static Geometry geometry = CellGeometry;
+
+/*
  * Default colors (colorname index)
  * foreground, background, cursor, reverse cursor
  */
@@ -171,6 +177,13 @@ static Rune stcursor = 0x2603; /* snowman ("☃") */
 
 static unsigned int cols = 80;
 static unsigned int rows = 24;
+
+/*
+ * Default width and height (including borders!)
+ */
+
+static unsigned int width = 564;
+static unsigned int height = 364;
 
 /*
  * Default colour and shape of the mouse cursor
