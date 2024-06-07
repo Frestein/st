@@ -1,5 +1,6 @@
 *.o
 config.h
 patches.h
+*.orig
 st
 stest
