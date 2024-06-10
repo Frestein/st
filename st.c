@@ -1133,7 +1133,6 @@ treset(void)
 void
 newterm(const Arg* a)
 {
-	char *tabbed_win;
 	switch (fork()) {
 	case -1:
 		die("fork failed: %s\n", strerror(errno));
@@ -1146,11 +1145,7 @@ newterm(const Arg* a)
 			break;
 		case 0:
 			chdir_by_pid(pid);
-			tabbed_win = getenv("XEMBED");
-			if (tabbed_win)
-				execl("/proc/self/exe", argv0, "-w", tabbed_win, NULL);
-			else
-				execl("/proc/self/exe", argv0, NULL);
+			execl("/proc/self/exe", argv0, NULL);
 			_exit(1);
 			break;
 		default:
