@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
+#include <time.h>
 #include <X11/Xft/Xft.h>
 #include <X11/cursorfont.h>
 #include <hb.h>
@@ -32,6 +33,7 @@ typedef struct {
 } RuneBuffer;
 
 static RuneBuffer hbrunebuffer = { 0, NULL };
+static hb_buffer_t *hbbuffer;
 
 /*
  * Poplulate the array with a list of font features, wrapped in FEATURE macro,
@@ -41,7 +43,19 @@ static RuneBuffer hbrunebuffer = { 0, NULL };
 hb_feature_t features[] = { };
 
 void
-hbunloadfonts()
+hbcreatebuffer(void)
+{
+	hbbuffer = hb_buffer_create();
+}
+
+void
+hbdestroybuffer(void)
+{
+	hb_buffer_destroy(hbbuffer);
+}
+
+void
+hbunloadfonts(void)
 {
 	for (int i = 0; i < hbfontcache.capacity; i++) {
 		hb_font_destroy(hbfontcache.fonts[i].font);
@@ -77,16 +91,21 @@ hbfindfont(XftFont *match)
 	return font;
 }
 
-void hbtransform(HbTransformData *data, XftFont *xfont, const Glyph *glyphs, int start, int length) {
-	ushort mode = USHRT_MAX;
+void
+hbtransform(HbTransformData *data, XftFont *xfont, const Glyph *glyphs, int start, int length)
+{
+	uint32_t mode;
 	unsigned int glyph_count;
 	int rune_idx, glyph_idx, end = start + length;
+	hb_buffer_t *buffer = hbbuffer;
 
 	hb_font_t *font = hbfindfont(xfont);
-	if (font == NULL)
+	if (font == NULL) {
+		data->count = 0;
 		return;
+	}
 
-	hb_buffer_t *buffer = hb_buffer_create();
+	hb_buffer_reset(buffer);
 	hb_buffer_set_direction(buffer, HB_DIRECTION_LTR);
 	hb_buffer_set_cluster_level(buffer, HB_BUFFER_CLUSTER_LEVEL_MONOTONE_CHARACTERS);
 
@@ -117,9 +136,4 @@ void hbtransform(HbTransformData *data, XftFont *xfont, const Glyph *glyphs, int
 	data->glyphs = info;
 	data->positions = pos;
 	data->count = glyph_count;
-}
-
-void hbcleanup(HbTransformData *data) {
-	hb_buffer_destroy(data->buffer);
-	memset(data, 0, sizeof(HbTransformData));
 }
