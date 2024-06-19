@@ -178,7 +178,7 @@ static Rune stcursor = 0x2603; /* snowman (U+2603) */
  * Default columns and rows numbers
  */
 
-static unsigned int cols = 80;
+static unsigned int cols = 82;
 static unsigned int rows = 24;
 
 /*
